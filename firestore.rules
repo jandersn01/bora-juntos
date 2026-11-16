@@ -1,0 +1,291 @@
+rules_version = '2';
+// usuarios/{uid}: uid imutável, nome (2..80), email (1..254) igual ao Auth.
+// Sem senhas, papéis, tokens ou campos adicionais. Demais caminhos negados.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function dono(uid) {
+      return request.auth != null && request.auth.uid == uid;
+    }
+    function perfilValido(uid) {
+      let d = request.resource.data;
+      return d.keys().hasAll(['uid', 'nome', 'email'])
+        && d.keys().hasOnly(['uid', 'nome', 'email'])
+        && d.uid is string && d.uid == uid && d.uid.size() <= 128
+        && d.nome is string && d.nome.size() >= 2 && d.nome.size() <= 80
+        && d.nome.matches('.*[^ ].*')
+        && d.email is string && d.email.size() > 0 && d.email.size() <= 254
+        && d.email == request.auth.token.email;
+    }
+    match /usuarios/{uid} {
+      allow get: if dono(uid);
+      allow list, delete: if false;
+      allow create: if dono(uid) && perfilValido(uid);
+      allow update: if dono(uid) && perfilValido(uid)
+        && request.resource.data.uid == resource.data.uid;
+    }
+    function evento(id) { return get(/databases/$(database)/documents/eventos/$(id)).data; }
+    function membro(id) {
+      return request.auth != null && exists(/databases/$(database)/documents/eventos/$(id)/participantes/$(request.auth.uid));
+    }
+    function organizador(id) { return membro(id) && evento(id).organizadorId == request.auth.uid; }
+    function horasValidas(d) {
+      let inicio = d.get('horaInicio', null);
+      let fim = d.get('horaFim', null);
+      return (inicio == null || (inicio is int && inicio >= 0 && inicio < 1440))
+        && (fim == null || (fim is int && fim >= 0 && fim < 1440))
+        && (d.inicio != d.fim || inicio == null || fim == null || inicio <= fim);
+    }
+    function colaborar(id) { return membro(id) && evento(id).status == 'ativo'; }
+    function texto(d, minimo, maximo) {
+      return d is string && d.size() >= minimo && d.size() <= maximo && d.matches('.*[^ ].*');
+    }
+    function opcaoValida(opcao) { return texto(opcao,1,100); }
+    function enqueteValida(d) {
+      return d.keys().hasAll(['pergunta','opcoes','autorId','aberta'])
+        && d.keys().hasOnly(['pergunta','opcoes','autorId','aberta'])
+        && texto(d.pergunta,1,200) && texto(d.autorId,1,128) && d.aberta is bool
+        && d.opcoes is list && d.opcoes.size() >= 2 && d.opcoes.size() <= 8
+        && d.opcoes.toSet().size() == d.opcoes.size()
+        && opcaoValida(d.opcoes[0]) && opcaoValida(d.opcoes[1])
+        && (d.opcoes.size()<3 || opcaoValida(d.opcoes[2]))
+        && (d.opcoes.size()<4 || opcaoValida(d.opcoes[3]))
+        && (d.opcoes.size()<5 || opcaoValida(d.opcoes[4]))
+        && (d.opcoes.size()<6 || opcaoValida(d.opcoes[5]))
+        && (d.opcoes.size()<7 || opcaoValida(d.opcoes[6]))
+        && (d.opcoes.size()<8 || opcaoValida(d.opcoes[7]));
+    }
+    function cadastroGastosValido(id,d) {
+      return d.keys().hasAll(['uids','ultimoUid']) && d.keys().hasOnly(['uids','ultimoUid'])
+        && texto(d.ultimoUid,1,128) && d.uids is list && d.uids.toSet().size() == d.uids.size()
+        && exists(/databases/$(database)/documents/eventos/$(id)/participantes/$(d.ultimoUid));
+    }
+    function gastoValido(id,d) {
+      let verificados = get(/databases/$(database)/documents/eventos/$(id)/controle/membrosGastos).data.uids;
+      return d.keys().hasAll(['descricao','valorCentavos','pagadorId','participantes','autorId'])
+        && d.keys().hasOnly(['descricao','valorCentavos','pagadorId','participantes','autorId'])
+        && texto(d.descricao,1,200) && texto(d.autorId,1,128) && texto(d.pagadorId,1,128)
+        && d.valorCentavos is int && d.valorCentavos > 0
+        && d.participantes is list && d.participantes.size() > 0
+        && d.participantes.toSet().size() == d.participantes.size()
+        && d.participantes.hasOnly(verificados) && d.pagadorId in verificados;
+    }
+    function tarefaValida(id,d) {
+      return d.keys().hasAll(['descricao','responsavelId','autorId','concluida'])
+        && d.keys().hasOnly(['descricao','responsavelId','autorId','concluida'])
+        && texto(d.descricao,1,200) && texto(d.autorId,1,128) && texto(d.responsavelId,1,128)
+        && d.concluida is bool
+        && exists(/databases/$(database)/documents/eventos/$(id)/participantes/$(d.responsavelId));
+    }
+    function atividadeValida(id,d) {
+      let e = evento(id);
+      return d.keys().hasAll(['descricao','dia','hora','autorId'])
+        && d.keys().hasOnly(['descricao','dia','hora','autorId'])
+        && texto(d.descricao,1,200) && texto(d.autorId,1,128)
+        && d.dia is int && d.hora is int && d.hora >= 0 && d.hora < 1440
+        && d.dia >= e.inicio && d.dia <= e.fim
+        && (d.dia != e.inicio || e.get('horaInicio',null) == null || d.hora >= e.horaInicio)
+        && (d.dia != e.fim || e.get('horaFim',null) == null || d.hora <= e.horaFim);
+    }
+    function inicioAbsoluto(d) { return d.inicio*1440+(d.get('horaInicio',null) == null ? 0 : d.horaInicio); }
+    function fimAbsoluto(d) { return d.fim*1440+(d.get('horaFim',null) == null ? 1439 : d.horaFim); }
+    function contadorRoteiro(id) {
+      let d = request.resource.data;
+      let caminho = /databases/$(database)/documents/eventos/$(id)/roteiro/$(d.roteiroAlteracaoId);
+      return colaborar(id) && d.diff(resource.data).affectedKeys().hasOnly(['roteiroQuantidade','roteiroAlteracaoId'])
+        && ((d.roteiroQuantidade == resource.data.get('roteiroQuantidade',0)+1 && !exists(caminho) && existsAfter(caminho))
+          || (d.roteiroQuantidade == resource.data.get('roteiroQuantidade',0)-1 && exists(caminho) && !existsAfter(caminho)));
+    }
+    function vinculoContador(id,atividadeId,delta) {
+      let depois = getAfter(/databases/$(database)/documents/eventos/$(id)).data;
+      return depois.roteiroQuantidade == evento(id).get('roteiroQuantidade',0)+delta
+        && depois.roteiroAlteracaoId == atividadeId;
+    }
+    function eventoValido(d) {
+      return d.keys().hasAll(['organizadorId','titulo','tipo','local','inicio','fim','descricao','capaUrl','status'])
+        && d.keys().hasOnly(['organizadorId','titulo','tipo','local','inicio','fim','descricao','capaUrl','status','detalhesLocal','horaInicio','horaFim','roteiroQuantidade','roteiroAlteracaoId'])
+        && d.organizadorId is string && d.organizadorId.size() > 0 && d.organizadorId.size() <= 128
+        && d.titulo is string && d.titulo.size() >= 2 && d.titulo.size() <= 100 && d.titulo.matches('.*[^ ].*')
+        && d.tipo in ['Viagem','Festa','Encontro','Outro','Churrasco']
+        && d.local is string && d.local.size() >= 2 && d.local.size() <= 300 && d.local.matches('.*[^ ].*')
+        && d.get('roteiroQuantidade',0) is int && d.get('roteiroQuantidade',0) >= 0
+        && d.get('roteiroQuantidade',0) <= 1000000
+        && d.get('roteiroAlteracaoId','') is string && d.get('roteiroAlteracaoId','').size() <= 128
+        && horasValidas(d)
+        && d.inicio is int && d.fim is int && d.inicio >= 0 && d.fim >= d.inicio && d.fim <= 2932896
+        && (!('detalhesLocal' in d) || (d.detalhesLocal is string && d.detalhesLocal.size() <= 500))
+        && d.descricao is string && d.descricao.size() <= 3000
+        && d.capaUrl is string && d.capaUrl.size() <= 2000
+        && (d.capaUrl == '' || d.capaUrl.matches('https://[^/ ]+.*'))
+        && d.status in ['ativo','cancelado','concluido','excluindo'];
+    }
+    function ingressoValido(id, uid, d) {
+      let convite = get(/databases/$(database)/documents/convites/$(d.conviteToken)).data;
+      return dono(uid) && d.papel == 'membro'
+        && d.conviteToken is string && d.conviteToken.matches('[0-9a-f]{64}')
+        && !exists(/databases/$(database)/documents/eventos/$(id)/participantes/$(uid))
+        && evento(id).status == 'ativo' && convite.ativo == true
+        && convite.eventoId == id && convite.organizadorId == evento(id).organizadorId
+        && getAfter(/databases/$(database)/documents/usuarios/$(uid)/eventos/$(id)).data.eventoId == id;
+    }
+    function participanteValido(uid, d) {
+      return d.keys().hasAll(['uid','nome','papel','presenca'])
+        && d.keys().hasOnly(['uid','nome','papel','presenca','conviteToken'])
+        && d.uid == uid && d.nome is string && d.nome.size() >= 2 && d.nome.size() <= 80
+        && d.papel in ['organizador','membro'] && d.presenca in ['vou','talvez','nao_vou']
+        && (!('conviteToken' in d) || (d.conviteToken is string && d.conviteToken.matches('[0-9a-f]{64}')));
+    }
+    match /convites/{token} {
+      allow get: if request.auth != null && token.matches('[0-9a-f]{64}');
+      allow list: if false;
+      allow create: if request.auth != null && token.matches('[0-9a-f]{64}')
+        && request.resource.data.keys().hasAll(['eventoId','organizadorId','ativo'])
+        && request.resource.data.keys().hasOnly(['eventoId','organizadorId','ativo'])
+        && request.resource.data.eventoId is string && request.resource.data.eventoId.size() > 0
+        && request.resource.data.eventoId.size() <= 128
+        && request.resource.data.organizadorId == request.auth.uid
+        && request.resource.data.ativo == true && organizador(request.resource.data.eventoId)
+        && evento(request.resource.data.eventoId).status == 'ativo'
+        && getAfter(/databases/$(database)/documents/eventos/$(request.resource.data.eventoId)/convites/$(token)).data.token == token;
+      // Revogado nunca volta a ficar ativo; somente limpeza durante exclusão remove o código.
+      allow update: if organizador(resource.data.eventoId)
+        && evento(resource.data.eventoId).status != 'excluindo'
+        && resource.data.ativo == true && request.resource.data.ativo == false
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ativo']);
+      allow delete: if organizador(resource.data.eventoId) && evento(resource.data.eventoId).status == 'excluindo'
+        && !existsAfter(/databases/$(database)/documents/eventos/$(resource.data.eventoId)/convites/$(token));
+    }
+    match /eventos/{id} {
+      // Índice auxiliar de membros já validados para despesas, não fonte de autorização do evento.
+      // Não há saída/remoção de participante no evento ativo; a limpeza exige status excluindo.
+      match /controle/membrosGastos {
+        allow get: if membro(id);
+        allow list: if false;
+        allow create: if colaborar(id) && cadastroGastosValido(id,request.resource.data)
+          && request.resource.data.uids == [request.resource.data.ultimoUid];
+        allow update: if colaborar(id) && cadastroGastosValido(id,request.resource.data)
+          && request.resource.data.uids.size() == resource.data.uids.size()+1
+          && request.resource.data.uids.hasAll(resource.data.uids)
+          && request.resource.data.uids.toSet().difference(resource.data.uids.toSet()) == [request.resource.data.ultimoUid].toSet();
+        allow delete: if organizador(id) && evento(id).status == 'excluindo';
+      }
+      match /gastos/{gastoId} {
+        allow read: if membro(id);
+        allow create: if colaborar(id) && gastoValido(id,request.resource.data)
+          && request.resource.data.autorId == request.auth.uid;
+        allow update: if colaborar(id) && gastoValido(id,request.resource.data)
+          && request.resource.data.autorId == resource.data.autorId
+          && (resource.data.autorId == request.auth.uid || organizador(id));
+        allow delete: if (colaborar(id) && (resource.data.autorId == request.auth.uid || organizador(id)))
+          || (organizador(id) && evento(id).status == 'excluindo');
+      }
+      match /enquetes/{enqueteId} {
+        allow read: if membro(id);
+        allow create: if colaborar(id) && organizador(id) && enqueteValida(request.resource.data)
+          && request.resource.data.autorId == request.auth.uid && request.resource.data.aberta == true;
+        // Pergunta/opções ficam imutáveis para preservar o significado dos votos.
+        allow update: if colaborar(id) && organizador(id) && enqueteValida(request.resource.data)
+          && resource.data.aberta == true && request.resource.data.aberta == false
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['aberta']);
+        allow delete: if organizador(id) && evento(id).status == 'excluindo';
+        match /votos/{uid} {
+          allow read: if membro(id);
+          allow create, update: if colaborar(id) && dono(uid)
+            && get(/databases/$(database)/documents/eventos/$(id)/enquetes/$(enqueteId)).data.aberta == true
+            && request.resource.data.keys().hasOnly(['opcao'])
+            && request.resource.data.opcao is int && request.resource.data.opcao >= 0
+            && request.resource.data.opcao < get(/databases/$(database)/documents/eventos/$(id)/enquetes/$(enqueteId)).data.opcoes.size();
+          allow delete: if organizador(id) && evento(id).status == 'excluindo';
+        }
+      }
+      match /tarefas/{tarefaId} {
+        allow read: if membro(id);
+        allow create: if colaborar(id) && tarefaValida(id,request.resource.data)
+          && request.resource.data.autorId == request.auth.uid && request.resource.data.concluida == false;
+        allow update: if colaborar(id) && tarefaValida(id,request.resource.data)
+          && request.resource.data.autorId == resource.data.autorId
+          && (((resource.data.autorId == request.auth.uid || organizador(id))
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['descricao','responsavelId']))
+            || ((resource.data.responsavelId == request.auth.uid || organizador(id))
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['concluida'])));
+        allow delete: if (colaborar(id) && (resource.data.autorId == request.auth.uid || organizador(id)))
+          || (organizador(id) && evento(id).status == 'excluindo');
+      }
+      match /roteiro/{atividadeId} {
+        allow read: if membro(id);
+        allow create: if colaborar(id) && atividadeValida(id,request.resource.data)
+          && request.resource.data.autorId == request.auth.uid && vinculoContador(id,atividadeId,1);
+        allow update: if colaborar(id) && atividadeValida(id,request.resource.data)
+          && request.resource.data.autorId == resource.data.autorId
+          && (resource.data.autorId == request.auth.uid || organizador(id));
+        allow delete: if (colaborar(id) && (resource.data.autorId == request.auth.uid || organizador(id)) && vinculoContador(id,atividadeId,-1))
+          || (organizador(id) && evento(id).status == 'excluindo');
+      }
+      match /convites/{token} {
+        allow read: if organizador(id);
+        allow create: if organizador(id) && evento(id).status == 'ativo'
+          && token.matches('[0-9a-f]{64}') && request.resource.data.keys().hasOnly(['token'])
+          && request.resource.data.token == token
+          && getAfter(/databases/$(database)/documents/convites/$(token)).data.eventoId == id
+          && getAfter(/databases/$(database)/documents/convites/$(token)).data.organizadorId == request.auth.uid
+          && getAfter(/databases/$(database)/documents/convites/$(token)).data.ativo == true;
+        allow update: if false;
+        allow delete: if organizador(id) && evento(id).status == 'excluindo'
+          && !existsAfter(/databases/$(database)/documents/convites/$(token));
+      }
+      // Só permite ler ID inexistente para a transação de criação; eventos existentes são privados.
+      allow get: if membro(id) || (request.auth != null && !exists(/databases/$(database)/documents/eventos/$(id)));
+      allow list: if false;
+      allow create: if request.auth != null && eventoValido(request.resource.data)
+        && request.resource.data.organizadorId == request.auth.uid && request.resource.data.status == 'ativo'
+        && request.resource.data.get('roteiroQuantidade',0) == 0 && request.resource.data.get('roteiroAlteracaoId','') == ''
+        && getAfter(/databases/$(database)/documents/eventos/$(id)/participantes/$(request.auth.uid)).data.papel == 'organizador'
+        && getAfter(/databases/$(database)/documents/usuarios/$(request.auth.uid)/eventos/$(id)).data.eventoId == id;
+      allow update: if eventoValido(request.resource.data) &&
+        ((organizador(id)
+        && request.resource.data.organizadorId == resource.data.organizadorId
+        && request.resource.data.get('roteiroQuantidade',0) == resource.data.get('roteiroQuantidade',0)
+        && request.resource.data.get('roteiroAlteracaoId','') == resource.data.get('roteiroAlteracaoId','')
+        && (resource.data.get('roteiroQuantidade',0) == 0 ||
+          (inicioAbsoluto(request.resource.data) <= inicioAbsoluto(resource.data) && fimAbsoluto(request.resource.data) >= fimAbsoluto(resource.data)))
+        && (request.resource.data.status == resource.data.status || resource.data.status == 'ativo' || request.resource.data.status == 'excluindo')
+        && (resource.data.status != 'excluindo' || request.resource.data == resource.data))
+        || contadorRoteiro(id));
+      allow delete: if organizador(id) && resource.data.status == 'excluindo'
+        && !existsAfter(/databases/$(database)/documents/eventos/$(id)/participantes/$(request.auth.uid))
+        && !existsAfter(/databases/$(database)/documents/usuarios/$(request.auth.uid)/eventos/$(id));
+      match /participantes/{uid} {
+        allow read: if membro(id);
+        allow create: if dono(uid) && participanteValido(uid, request.resource.data)
+          && request.resource.data.nome == get(/databases/$(database)/documents/usuarios/$(uid)).data.nome
+          && request.resource.data.presenca == 'vou'
+          && ((!exists(/databases/$(database)/documents/eventos/$(id))
+            && request.resource.data.keys().hasOnly(['uid','nome','papel','presenca'])
+            && request.resource.data.papel == 'organizador'
+            && getAfter(/databases/$(database)/documents/eventos/$(id)).data.organizadorId == uid
+            && getAfter(/databases/$(database)/documents/usuarios/$(uid)/eventos/$(id)).data.eventoId == id)
+            || ingressoValido(id,uid,request.resource.data));
+        allow update: if dono(uid) && membro(id) && evento(id).status == 'ativo'
+          && participanteValido(uid,request.resource.data)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['presenca']);
+        allow delete: if organizador(id) && evento(id).status == 'excluindo'
+          && !existsAfter(/databases/$(database)/documents/usuarios/$(uid)/eventos/$(id))
+          && (uid != request.auth.uid || !existsAfter(/databases/$(database)/documents/eventos/$(id)));
+      }
+    }
+    match /usuarios/{uid}/eventos/{id} {
+      allow read: if dono(uid);
+      allow create: if dono(uid)
+        && request.resource.data.keys().hasOnly(['eventoId']) && request.resource.data.eventoId == id
+        && ((!exists(/databases/$(database)/documents/eventos/$(id))
+          && getAfter(/databases/$(database)/documents/eventos/$(id)).data.organizadorId == uid
+          && getAfter(/databases/$(database)/documents/eventos/$(id)/participantes/$(uid)).data.papel == 'organizador')
+          || ingressoValido(id,uid,getAfter(/databases/$(database)/documents/eventos/$(id)/participantes/$(uid)).data));
+      allow update: if false;
+      allow delete: if organizador(id) && evento(id).status == 'excluindo'
+        && !existsAfter(/databases/$(database)/documents/eventos/$(id)/participantes/$(uid));
+    }
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
