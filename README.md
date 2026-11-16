@@ -21,7 +21,7 @@ APK debug: app/build/outputs/apk/debug/app-debug.apk.
 Alternativa CLI: `npx -y firebase-tools@latest login`, depois `npx -y firebase-tools@latest deploy --only firestore:rules --project bora-juntos`.
 Para obter a configuração do app existente: `npx -y firebase-tools@latest apps:sdkconfig ANDROID <APP_ID_ANDROID> --project bora-juntos`; salve a configuração retornada em app/google-services.json.
 Não incluir service account/Admin SDK, senhas ou tokens em código/documentos. As regras, e não a configuração cliente, autorizam os dados.
-A publicação das regras e o fluxo com contas reais não foram executados/verificados pelo agente. Nenhum deploy ou faturamento foi ativado automaticamente.
+A publicação das regras e o fluxo com contas reais permanecem pendentes de verificação. Nenhum deploy ou faturamento foi ativado automaticamente.
 
 ## API e sincronização
 ViaCEP: HTTPS, baseUrl https://viacep.com.br/, oito dígitos, erros de CEP inexistente/HTTP/rede, endereço editável e preservado nas falhas. Não exige chave.
@@ -36,6 +36,3 @@ Outros testes de regras estão em tests/; se combinar arquivos, use `node --test
 Somente os testes usam dados sintéticos e emuladores; o APK usa o projeto real.
 Validação desta entrega: build debug, quatro testes Kotlin de cálculo e quatro testes direcionados de regras de Gastos aprovados. Isso não comprova execução em dispositivo nem publicação.
 Aceite manual: cadastro/perfil/login/reabertura; duas contas por convite, presença/voto/tarefa/roteiro sincronizados; despesas com pagadores/divisões diferentes, edição/exclusão e membro posterior; conta não membro sem acesso; encerramento e exclusão completa dos dependentes.
-
-## Branches
-master contém fontes, recursos, build/Wrapper, regras, testes e este README técnico. AGENTS.md, docs/*.md e docs/referencias/ são documentos de desenvolvimento preservados somente em developer.
